@@ -14,49 +14,44 @@ import sys
 import time
 import click
 import httpx
+import os
 
-# current directory
-path = pathlib.Path(__file__).parent
+# 確定應用程序係一個腳本文件或凍結EXE
+if getattr(sys, 'frozen', False):
+    path = os.path.dirname(sys.executable)
+elif __file__:
+    path = os.path.dirname(__file__)
 
 
 def load_proxies() -> list:
     """load proxies for files
     :return: proxies list
     """
-    proxy_data = []
-    try:
-        proxy_path = pathlib.Path(path, 'http_proxy.txt')
-        for line in open(proxy_path):
-            le = line.replace("\r", "").replace("\n", "")
-            if le == '':
+    proxy_all = []
+    proxy_file = ["http_proxy.txt", "socks5_proxy.txt", "socks4_proxy.txt"]
+    for fn in proxy_file:
+        f_obj = pathlib.Path(path, fn)
+        if f_obj.exists():
+            proxy_lst = pathlib.Path(path, fn).read_text(
+                encoding="utf8").split("\n")
+            if not proxy_lst:
                 continue
-            proxy_one = {
-                'all://': 'http://' + le
-            }
-            proxy_data.append(proxy_one)
-        proxy_path = pathlib.Path(path, 'socks4_proxy.txt')
-        for line in open(proxy_path):
-            le = line.replace("\r", "").replace("\n", "")
-            if le == '':
-                continue
-            proxy_one = {
-                'all://': 'socks4://' + le
-            }
-            proxy_data.append(proxy_one)
-        proxy_path = pathlib.Path(path, 'socks5_proxy.txt')
-        for line in open(proxy_path):
-            le = line.replace("\r", "").replace("\n", "")
-            if le == '':
-                continue
-            proxy_one = {
-                'all://': 'socks5://' + le
-            }
-            proxy_data.append(proxy_one)
-    except:
-        logger.error("proxies 加载失败")
-        return []
-    logger.success(f"proxies 加载完成 接口数:{len(proxy_data)}")
-    return proxy_data
+            if fn == "http_proxy.txt":
+                for proxy in proxy_lst:
+                    if proxy:
+                        proxy_all.append({'all://': 'http://' + proxy})
+            elif fn == "socks5_proxy.txt":
+                for proxy in proxy_lst:
+                    if proxy:
+                        proxy_all.append({'all://': 'socks5://' + proxy})
+            elif fn == "socks4_proxy.txt":
+                for proxy in proxy_lst:
+                    if proxy:
+                        proxy_all.append({'all://': 'socks4://' + proxy})
+        else:
+            f_obj.touch()
+    logger.success(f"代理列表加载完成,代理数:{len(proxy_all)}")
+    return proxy_all
 
 
 def load_json() -> List[API]:
@@ -66,7 +61,6 @@ def load_json() -> List[API]:
     json_path = pathlib.Path(path, 'api.json')
     if not json_path.exists():
         logger.error("Json file not exists!")
-        # return None
         raise ValueError
 
     with open(json_path.resolve(), mode="r", encoding="utf8") as j:
@@ -80,7 +74,6 @@ def load_json() -> List[API]:
             return APIs
         except Exception as why:
             logger.error(f"Json file syntax error:{why}")
-            # return None
             raise ValueError
 
 
@@ -91,7 +84,6 @@ def load_getapi() -> list:
     json_path = pathlib.Path(path, 'GETAPI.json')
     if not json_path.exists():
         logger.error("GETAPI.json file not exists!")
-        # return None
         raise ValueError
 
     with open(json_path.resolve(), mode="r", encoding="utf8") as j:
@@ -101,38 +93,54 @@ def load_getapi() -> list:
             return datas
         except Exception as why:
             logger.error(f"Json file syntax error:{why}")
-            # return None
             raise ValueError
 
 
 @click.command()
-@click.option("--thread","--t","-t", help="线程数(默认64)", default=64)
-@click.option("--phone", "-p","-P","--P","--p", help="手机号,可传入多个再使用-p传递", prompt=True, required=True, multiple=True)
+@click.option("--thread", "-t", help="线程数(默认64)", default=64)
+@click.option("--phone", "-p", help="手机号,可传入多个再使用-p传递", multiple=True, type=str)
 @click.option('--frequency', "-f", default=1, help="执行次数(默认1次)", type=int)
 @click.option('--interval', "-i", default=60, help="间隔时间(默认60s)", type=int)
 @click.option('--enable_proxy', "-e", is_flag=True, help="开启代理(默认关闭)", type=bool)
 def run(thread: int, phone: Union[str, tuple], frequency: int, interval: int, enable_proxy: bool = False):
     """传入线程数和手机号启动轰炸,支持多手机号"""
-    logger.info(f"手机号:{phone}, 线程数:{thread}, 执行次数:{frequency}, 间隔时间:{interval}")
-    with ThreadPoolExecutor(max_workers=thread) as pool:
-        try:
-            _api = load_json()
-            _api_get = load_getapi()
-            _proxies = load_proxies()
-        except ValueError:
-            logger.error("读取接口出错!正在重新下载接口数据!....")
-            update()
+    while not phone:
+        phone = input("Phone: ")
+    for i in phone:
+        if not i.isdigit():
+            logger.error("手机号必须为纯数字！")
             sys.exit(1)
+    logger.info(
+        f"手机号:{phone}, 线程数:{thread}, 执行次数:{frequency}, 间隔时间:{interval}")
+    try:
+        _api = load_json()
+        _api_get = load_getapi()
+        _proxies = load_proxies()
+        # fix: by Ethan
+        if not _proxies:
+            if enable_proxy:
+                logger.error("无法读取任何代理....请取消-e")
+                sys.exit(1)
+            _proxies = [None]
+    except ValueError:
+        logger.error("读取接口出错!正在重新下载接口数据!....")
+        update()
+        sys.exit(1)
+
+    with ThreadPoolExecutor(max_workers=thread) as pool:
         for i in range(1, frequency + 1):
             logger.success(f"第{i}波轰炸开始！")
+            # 此處代碼邏輯有問題,如果 _proxy 為空就不會啓動轟炸,必須有東西才行
             for proxy in _proxies:
                 logger.success(f"第{i}波轰炸 - 当前正在使用代理：" +
-                               proxy['all://'] + " 进行轰炸...") if enable_proxy else logger.success(f"第{i}波开始轰炸...")
+                                proxy['all://'] + " 进行轰炸...") if enable_proxy else logger.success(f"第{i}波开始轰炸...")
                 # 不可用的代理或API过多可能会影响轰炸效果
                 for api in _api:
-                    pool.submit(reqFuncByProxy, api, phone, proxy) if enable_proxy else pool.submit(reqFunc, api, phone)
+                    pool.submit(reqFuncByProxy, api, phone, proxy) if enable_proxy else pool.submit(
+                        reqFunc, api, phone)
                 for api_get in _api_get:
-                    pool.submit(reqFuncByProxy, api_get, phone, proxy) if enable_proxy else pool.submit(reqFunc, api_get, phone)
+                    pool.submit(reqFuncByProxy, api_get, phone, proxy) if enable_proxy else pool.submit(
+                        reqFunc, api_get, phone)
                 logger.success(f"第{i}波轰炸提交结束！休息{interval}s.....")
                 time.sleep(interval)
 
@@ -169,12 +177,11 @@ def oneRun(phone):
 @click.command()
 def update():
     """从 github 获取最新接口"""
-    GETAPI_json_url = f"https://hk1.monika.love/AdminWhaleFall/SMSBoom/master/GETAPI.json"
-    API_json_url = f"https://hk1.monika.love/AdminWhaleFall/SMSBoom/master/api.json"
+    GETAPI_json_url = f"https://hk1.monika.love/OpenEthan/SMSBoom/master/GETAPI.json"
+    API_json_url = f"https://hk1.monika.love/OpenEthan/SMSBoom/master/api.json"
     logger.info(f"正在从GitHub拉取最新接口!")
     try:
         with httpx.Client(verify=False, timeout=10) as client:
-            # print(API_json_url)
             GETAPI_json = client.get(
                 GETAPI_json_url, headers=default_header_user_agent()).content.decode(encoding="utf8")
             api_json = client.get(
